@@ -1,7 +1,7 @@
 {
-  "name": "SlitScan",
-  "short_name": "SlitScan",
-  "description": "Old-school line-scanner camera: sweep the phone and the scene comes out flat.",
+  "name": "FlatScan",
+  "short_name": "FlatScan",
+  "description": "Pick any surface in a photo and flatten it into a straight-on scan.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

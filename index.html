@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<title>SlitScan</title>
-<meta name="description" content="Old-school line-scanner camera: sweep the phone and the scene comes out flat.">
+<title>FlatScan</title>
+<meta name="description" content="Pick any surface in a photo and flatten it into a straight-on scan.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="SlitScan">
+<meta name="apple-mobile-web-app-title" content="FlatScan">
 <meta name="theme-color" content="#1c1b19">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
@@ -16,17 +16,17 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@500;700&family=VT323&display=swap">
 <style>
-  /* Layout: one-screen camera body, like a 90s flatbed: viewfinder glass, paper tray, control deck. */
+  /* Layout: one-screen tool in three steps (shoot, pick corners, scan), styled like a flatbed's control panel. */
   :root {
-    --body: #1c1b19;      /* warm graphite plastic */
+    --body: #1c1b19;
     --panel: #282623;
     --edge: #3b3833;
     --ink: #ece6da;
     --muted: #9a9286;
     --lcd-bg: #1d1608;
-    --lcd: #ffb000;       /* amber LCD + scan lamp */
-    --start: #3f9e57;     /* copier START green */
-    --stop: #c9452c;
+    --lcd: #ffb000;
+    --go: #3f9e57;
+    --go-shadow: #23602f;
     --font-lcd: "VT323", ui-monospace, Menlo, monospace;
     --font-ui: "Archivo Narrow", "Arial Narrow", system-ui, sans-serif;
     color-scheme: dark;
@@ -34,535 +34,436 @@
   [hidden] { display: none !important; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; margin: 0; background: var(--body); color: var(--ink); }
-  body {
-    font: 500 15px/1.35 var(--font-ui);
-    overflow: hidden;
-    -webkit-user-select: none; user-select: none;
-    touch-action: manipulation;
-  }
-  button { font: inherit; color: inherit; cursor: pointer; }
-  button:focus-visible { outline: 2px solid var(--lcd); outline-offset: 2px; }
+  body { font: 500 15px/1.4 var(--font-ui); overflow: hidden; -webkit-user-select: none; user-select: none; }
+  button, label.btn { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible, label.btn:focus-within { outline: 2px solid var(--lcd); outline-offset: 2px; }
   button:disabled { opacity: .4; cursor: default; }
 
-  .app {
-    height: 100%;
+  .screen {
+    position: fixed; inset: 0;
     display: flex; flex-direction: column; gap: 12px;
     padding-top: max(10px, env(safe-area-inset-top, 0px));
     padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
     padding-left: max(16px, env(safe-area-inset-left, 0px));
     padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
-
-  /* Top: brand plate + LCD */
-  .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; }
   .brand { display: flex; flex-direction: column; line-height: 1; }
   .brand strong { font-weight: 700; font-size: 20px; letter-spacing: .14em; }
   .brand small { font-size: 10px; letter-spacing: .2em; color: var(--muted); margin-top: 4px; text-transform: uppercase; }
   .lcd {
-    display: flex; gap: 12px; align-items: baseline;
     background: var(--lcd-bg); color: var(--lcd);
-    font: 22px/1 var(--font-lcd);
-    padding: 6px 10px 4px; border-radius: 4px;
+    font: 22px/1 var(--font-lcd); padding: 6px 10px 4px; border-radius: 4px;
     border: 1px solid #000; box-shadow: inset 0 1px 6px rgba(0,0,0,.8);
-    text-shadow: 0 0 6px rgba(255,176,0,.45);
-    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 6px rgba(255,176,0,.45); font-variant-numeric: tabular-nums; white-space: nowrap;
   }
-
-  /* Viewfinder */
-  .finder {
-    position: relative; flex: 1 1 auto; min-height: 0;
-    border-radius: 10px; overflow: hidden;
-    background: #000; border: 1px solid var(--edge);
-  }
-  .finder video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .lamp {
-    position: absolute; pointer-events: none;
-    background: var(--lcd); box-shadow: 0 0 10px 2px rgba(255,176,0,.7);
-    opacity: .9;
-  }
-  .lamp.h { top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-1px); }
-  .lamp.v { left: 0; right: 0; top: 50%; height: 2px; transform: translateY(-1px); }
-  .scanning .lamp { animation: pulse .5s ease-in-out infinite alternate; }
-  @keyframes pulse { to { opacity: .55; } }
-  .power {
-    position: absolute; inset: 0;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
-    padding: 24px; text-align: center;
-    background: radial-gradient(circle at 50% 45%, #2c2925, #121110 75%);
-  }
-  .power p { margin: 0; max-width: 30ch; color: var(--muted); }
-  .power p.err { color: #f0a08f; }
-  .power button {
-    font-weight: 700; letter-spacing: .18em; font-size: 15px;
-    padding: 14px 26px; border-radius: 999px;
-    background: var(--start); border: 0; color: #fff;
-    box-shadow: 0 3px 0 #23602f;
-  }
-
-  /* Paper tray: live strip */
-  .tray {
-    flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px;
-  }
-  .tray-glass {
-    position: relative; height: 112px; border-radius: 6px; overflow: hidden;
-    background: #14120f; border: 1px solid var(--edge);
-  }
-  .tray canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .tray-hint {
-    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    padding: 0 16px; text-align: center; color: var(--muted); font-size: 13px; letter-spacing: .04em;
-  }
-  .meter { height: 3px; background: var(--panel); border-radius: 2px; overflow: hidden; }
-  .meter i { display: block; height: 100%; width: 0; background: var(--lcd); }
-
-  /* Control deck */
-  .deck {
-    flex: 0 0 auto; display: flex; flex-direction: column; gap: 12px;
-    background: var(--panel); border: 1px solid var(--edge); border-radius: 12px;
-    padding: 12px;
-  }
-  .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
-  .field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: 0; }
-  .label { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
-  .seg { display: flex; background: var(--body); border: 1px solid var(--edge); border-radius: 7px; padding: 2px; }
-  .seg button {
-    flex: 1 1 0; border: 0; background: transparent; border-radius: 5px;
-    padding: 7px 0; font-weight: 700; font-size: 15px; color: var(--muted);
-  }
-  .seg button[aria-checked="true"] { background: var(--edge); color: var(--ink); }
-  .key {
-    width: 72px; display: flex; flex-direction: column; align-items: center; gap: 2px;
-    background: var(--body); border: 1px solid var(--edge); border-radius: 8px; padding: 8px 0;
-    font-size: 10px; letter-spacing: .2em;
-  }
-  .key b { font: 22px/1 var(--font-lcd); letter-spacing: 0; color: var(--lcd); }
-  .key[aria-pressed="false"] b { color: var(--muted); }
-  .start {
-    flex: 0 0 auto; width: 96px; height: 96px; border-radius: 50%;
-    border: 4px solid var(--body); outline: 1px solid var(--edge);
-    background: var(--start); color: #fff;
-    font-weight: 700; letter-spacing: .18em; font-size: 14px;
-    box-shadow: 0 4px 0 #23602f, inset 0 2px 0 rgba(255,255,255,.18);
-    transition: transform .08s;
-  }
-  .start:active { transform: translateY(2px); box-shadow: 0 2px 0 #23602f; }
-  .scanning .start { background: var(--stop); box-shadow: 0 4px 0 #7d2516, inset 0 2px 0 rgba(255,255,255,.18); }
-
-  /* Overlays */
-  .developing {
-    position: fixed; inset: 0; z-index: 20;
-    display: flex; align-items: center; justify-content: center;
-    background: rgba(10,9,8,.8);
-    font: 30px/1 var(--font-lcd); color: var(--lcd); letter-spacing: .1em;
-  }
-  .developing span { animation: pulse .6s ease-in-out infinite alternate; }
-  .sheet {
-    position: fixed; inset: 0; z-index: 10; background: var(--body);
-    display: flex; flex-direction: column; gap: 12px;
-    padding-top: max(10px, env(safe-area-inset-top, 0px));
-    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
-    padding-left: max(16px, env(safe-area-inset-left, 0px));
-    padding-right: max(16px, env(safe-area-inset-right, 0px));
-  }
-  .sheet-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .ghost {
     background: transparent; border: 1px solid var(--edge); border-radius: 999px;
-    padding: 8px 14px; font-weight: 700; letter-spacing: .08em;
+    padding: 8px 14px; font-weight: 700; letter-spacing: .08em; font-size: 13px;
   }
-  .output {
-    flex: 1 1 auto; min-height: 0; border-radius: 8px; border: 1px solid var(--edge);
-    background: #0f0e0c; -webkit-overflow-scrolling: touch;
+  .go {
+    border: 0; border-radius: 12px; padding: 15px 18px;
+    background: var(--go); color: #fff; font-weight: 700; letter-spacing: .14em; text-align: center;
+    box-shadow: 0 3px 0 var(--go-shadow);
   }
-  .output img { display: block; max-width: none; -webkit-user-select: auto; user-select: auto; -webkit-touch-callout: default; }
-  .output.h { overflow-x: auto; overflow-y: hidden; }
-  .output.h img { height: 100%; width: auto; }
-  .output.v { overflow-y: auto; overflow-x: hidden; }
-  .output.v img { width: 100%; height: auto; }
-  .sheet-bottom { display: flex; gap: 10px; align-items: center; }
-  .share {
-    flex: 1 1 auto; border: 0; border-radius: 10px; padding: 14px;
-    background: var(--start); color: #fff; font-weight: 700; letter-spacing: .12em;
-    box-shadow: 0 3px 0 #23602f;
+  .go:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--go-shadow); }
+  .plain {
+    border: 1px solid var(--edge); border-radius: 12px; padding: 15px 18px;
+    background: var(--panel); font-weight: 700; letter-spacing: .14em; text-align: center;
   }
-  .tip { margin: 0; font-size: 12px; color: var(--muted); text-align: center; }
+  .label { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
+  .chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chips button {
+    flex: 0 0 auto; border: 1px solid var(--edge); background: var(--body);
+    border-radius: 999px; padding: 7px 13px; font-weight: 700; font-size: 14px; color: var(--muted);
+  }
+  .chips button[aria-checked="true"] { background: var(--edge); color: var(--ink); border-color: var(--muted); }
 
-  @media (prefers-reduced-motion: reduce) {
-    .scanning .lamp, .developing span { animation: none; }
+  /* Step 1 */
+  .hero { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; gap: 22px; }
+  .demo { width: 100%; max-width: 360px; margin: 0 auto; aspect-ratio: 16 / 10; }
+  .demo svg { width: 100%; height: 100%; display: block; }
+  .hero h1 { margin: 0; font-size: 30px; line-height: 1.1; font-weight: 700; letter-spacing: .01em; text-wrap: balance; }
+  .tips { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; color: var(--muted); }
+  .tips li { display: grid; grid-template-columns: 22px 1fr; gap: 6px; }
+  .tips b { font: 20px/1 var(--font-lcd); color: var(--lcd); }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .actions input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .actions label { display: block; }
+  .err { color: #f0a08f; margin: 0; }
+
+  /* Step 2 */
+  .stage { position: relative; flex: 1 1 auto; min-height: 0; touch-action: none; border-radius: 10px; overflow: hidden; background: #0f0e0c; border: 1px solid var(--edge); }
+  .stage img { position: absolute; display: block; max-width: none; pointer-events: none; }
+  .stage svg { position: absolute; overflow: visible; }
+  .shade { fill: rgba(10, 9, 8, .55); fill-rule: evenodd; }
+  .quad { fill: none; stroke: var(--lcd); stroke-width: 2; }
+  .handle { fill: rgba(255,176,0,.18); stroke: var(--lcd); stroke-width: 2; }
+  .handle.active { fill: rgba(255,176,0,.45); }
+  .loupe {
+    position: absolute; top: 10px; width: 132px; height: 132px; border-radius: 50%;
+    border: 2px solid var(--lcd); box-shadow: 0 4px 14px rgba(0,0,0,.6); pointer-events: none; background: #000;
   }
+  .loupe.left { left: 10px; } .loupe.right { right: 10px; }
+  .panel { display: flex; flex-direction: column; gap: 10px; background: var(--panel); border: 1px solid var(--edge); border-radius: 12px; padding: 12px; }
+  .panel-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .hint { margin: 0; font-size: 13px; color: var(--muted); }
+
+  /* Step 3 */
+  .output { position: relative; flex: 1 1 auto; min-height: 0; border-radius: 10px; border: 1px solid var(--edge); background: #0f0e0c; display: flex; align-items: center; justify-content: center; padding: 10px; }
+  .output img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; box-shadow: 0 6px 24px rgba(0,0,0,.6); -webkit-user-select: auto; user-select: auto; -webkit-touch-callout: default; }
+  .busy {
+    position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
+    background: rgba(10,9,8,.8); font: 30px/1 var(--font-lcd); color: var(--lcd); letter-spacing: .1em;
+  }
+  .busy span { animation: pulse .6s ease-in-out infinite alternate; }
+  @keyframes pulse { to { opacity: .5; } }
+  .bottom { display: grid; grid-template-columns: auto 1fr; gap: 10px; }
+  @media (prefers-reduced-motion: reduce) { .busy span { animation: none; } }
 </style>
 </head>
 <body>
-<div class="app" id="app">
+
+<!-- Step 1: get a photo -->
+<section class="screen" id="startScreen">
   <header class="top">
-    <div class="brand"><strong>SLITSCAN</strong><small>Line scanner · Model 05</small></div>
-    <div class="lcd" aria-live="off">
-      <span id="lcdLens">0.5×</span><span id="lcdFps">--FPS</span><span id="lcdLines">0000</span>
-    </div>
+    <div class="brand"><strong>FLATSCAN</strong><small>Surface scanner · Model 05</small></div>
+    <div class="lcd">0.5×</div>
   </header>
-
-  <section class="finder" aria-label="Viewfinder">
-    <video id="video" playsinline muted autoplay></video>
-    <div class="lamp h" id="lamp"></div>
-    <div class="power" id="power">
-      <button id="powerBtn" type="button">POWER ON</button>
-      <p id="powerMsg">Builds a picture one thin slit at a time while you turn the phone. Tap Power on and allow the camera.</p>
+  <div class="hero">
+    <div class="demo" aria-hidden="true">
+      <svg viewBox="0 0 320 200">
+        <polygon points="18,40 138,22 150,170 8,150" fill="#3b3833" stroke="#ffb000" stroke-width="2"/>
+        <g fill="#9a9286"><circle cx="18" cy="40" r="5"/><circle cx="138" cy="22" r="5"/><circle cx="150" cy="170" r="5"/><circle cx="8" cy="150" r="5"/></g>
+        <path d="M170 100 h28 m-8 -8 l8 8 l-8 8" stroke="#ffb000" stroke-width="2.5" fill="none"/>
+        <rect x="214" y="34" width="98" height="132" fill="#ece6da"/>
+        <g stroke="#9a9286" stroke-width="2"><line x1="226" y1="56" x2="298" y2="56"/><line x1="226" y1="70" x2="290" y2="70"/><line x1="226" y1="84" x2="298" y2="84"/><line x1="226" y1="98" x2="270" y2="98"/></g>
+        <rect x="226" y="114" width="72" height="40" fill="#9a9286"/>
+      </svg>
     </div>
-  </section>
-
-  <section class="tray" aria-label="Scan in progress">
-    <div class="tray-glass">
-      <canvas id="preview"></canvas>
-      <div class="tray-hint" id="trayHint">Press START, then turn slowly left → right</div>
-    </div>
-    <div class="meter"><i id="meter"></i></div>
-  </section>
-
-  <section class="deck">
-    <div class="row">
-      <div class="field">
-        <span class="label" id="dirLabel">Sweep</span>
-        <div class="seg" role="radiogroup" aria-labelledby="dirLabel" id="dirSeg">
-          <button type="button" role="radio" id="dirH" data-v="h" aria-checked="true" aria-label="Left to right">↔</button>
-          <button type="button" role="radio" id="dirV" data-v="v" aria-checked="false" aria-label="Top to bottom">↕</button>
-        </div>
-      </div>
-      <div class="field">
-        <span class="label" id="slitLabel">Slit</span>
-        <div class="seg" role="radiogroup" aria-labelledby="slitLabel" id="slitSeg">
-          <button type="button" role="radio" id="slit1" data-v="1" aria-checked="false">1px</button>
-          <button type="button" role="radio" id="slit2" data-v="2" aria-checked="true">2px</button>
-          <button type="button" role="radio" id="slit4" data-v="4" aria-checked="false">4px</button>
-        </div>
-      </div>
-    </div>
-    <div class="row">
-      <button type="button" class="key" id="lensBtn" disabled>LENS<b id="lensLabel">0.5×</b></button>
-      <button type="button" class="start" id="startBtn" disabled>START</button>
-      <button type="button" class="key" id="retroBtn" aria-pressed="true">RETRO<b id="retroLabel">ON</b></button>
-    </div>
-  </section>
-</div>
-
-<div class="developing" id="developing" hidden><span>DEVELOPING…</span></div>
-
-<div class="sheet" id="sheet" hidden>
-  <div class="sheet-top">
-    <button type="button" class="ghost" id="newBtn">✕ NEW SCAN</button>
-    <div class="lcd"><span id="outDims">0×0</span></div>
+    <h1>Turn any surface into a flat, straight-on scan.</h1>
+    <ul class="tips">
+      <li><b>1</b><span>Shoot the surface. In the camera, tap <strong>0.5×</strong> to fit big things like walls, floors and murals.</span></li>
+      <li><b>2</b><span>Drag the four corners onto the surface’s edges.</span></li>
+      <li><b>3</b><span>FlatScan removes the perspective and the uneven light.</span></li>
+    </ul>
+    <p class="err" id="startErr" hidden></p>
   </div>
-  <div class="output h" id="output"><img id="outImg" alt="Your slit scan"></div>
-  <div class="sheet-bottom">
-    <button type="button" class="key" id="retroBtn2" aria-pressed="true">RETRO<b id="retroLabel2">ON</b></button>
-    <button type="button" class="share" id="shareBtn">SAVE / SHARE</button>
+  <div class="actions">
+    <label class="btn go" for="cameraInput">TAKE PHOTO<input id="cameraInput" type="file" accept="image/*" capture="environment"></label>
+    <label class="btn plain" for="libraryInput">CHOOSE PHOTO<input id="libraryInput" type="file" accept="image/*"></label>
   </div>
-  <p class="tip" id="tip">In the share sheet, tap “Save Image” to put it in Photos. You can also press and hold the image.</p>
-</div>
+</section>
 
+<!-- Step 2: pick the surface -->
+<section class="screen" id="editScreen" hidden>
+  <header class="top">
+    <button type="button" class="ghost" id="backBtn">‹ NEW PHOTO</button>
+    <div class="lcd" id="ratioLcd">W:H 1.00</div>
+  </header>
+  <div class="stage" id="stage">
+    <img id="editImg" alt="Your photo">
+    <svg id="overlay">
+      <path class="shade" id="shade"></path>
+      <polygon class="quad" id="quad"></polygon>
+      <g id="handles"></g>
+    </svg>
+    <canvas class="loupe left" id="loupe" width="264" height="264" hidden></canvas>
+  </div>
+  <div class="panel">
+    <div class="panel-row">
+      <span class="label" id="shapeLabel">Real shape</span>
+      <span class="hint" id="shapeHint"></span>
+    </div>
+    <div class="chips" role="radiogroup" aria-labelledby="shapeLabel" id="shapeChips">
+      <button type="button" role="radio" id="shapeAuto" data-shape="auto" aria-checked="true">Auto</button>
+      <button type="button" role="radio" id="shapeSquare" data-shape="1" aria-checked="false">Square</button>
+      <button type="button" role="radio" id="shapeA4" data-shape="1.4142" aria-checked="false">A4 / paper</button>
+      <button type="button" role="radio" id="shape43" data-shape="1.3333" aria-checked="false">4:3</button>
+      <button type="button" role="radio" id="shape32" data-shape="1.5" aria-checked="false">3:2</button>
+      <button type="button" role="radio" id="shape169" data-shape="1.7778" aria-checked="false">16:9</button>
+    </div>
+    <button type="button" class="go" id="flattenBtn">FLATTEN</button>
+  </div>
+</section>
+
+<!-- Step 3: the scan -->
+<section class="screen" id="resultScreen" hidden>
+  <header class="top">
+    <button type="button" class="ghost" id="adjustBtn">‹ CORNERS</button>
+    <div class="lcd" id="dimsLcd">0×0</div>
+  </header>
+  <div class="output"><img id="outImg" alt="Your flattened scan"></div>
+  <div class="panel">
+    <span class="label" id="lookLabel">Look</span>
+    <div class="chips" role="radiogroup" aria-labelledby="lookLabel" id="lookChips">
+      <button type="button" role="radio" id="lookScan" data-look="scan" aria-checked="true">Scanner</button>
+      <button type="button" role="radio" id="lookMono" data-look="mono" aria-checked="false">Scanner B&amp;W</button>
+      <button type="button" role="radio" id="lookPhoto" data-look="photo" aria-checked="false">Original light</button>
+    </div>
+    <div class="bottom">
+      <button type="button" class="plain" id="newBtn">NEW</button>
+      <button type="button" class="go" id="shareBtn">SAVE / SHARE</button>
+    </div>
+    <p class="hint" id="shareHint">In the share sheet, tap “Save Image” to put it in Photos.</p>
+  </div>
+</section>
+
+<div class="busy" id="busy" hidden><span id="busyText">FLATTENING…</span></div>
+
+<script src="flat.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const video = $("video"), preview = $("preview"), pctx = preview.getContext("2d");
+  const NS = "http://www.w3.org/2000/svg";
+  const MAX_SOURCE = 16000000, MAX_OUTPUT = 12000000;
 
-  // Safari caps a canvas at ~16.7M pixels; stay under it.
-  const MAX_AREA = 16000000, MAX_LINES = 8000;
-
-  const state = { dir: "h", slit: 2, retro: true, scanning: false, cams: [], camIndex: 0, stream: null, lens: "0.5×" };
-  try {
-    const saved = JSON.parse(localStorage.getItem("slitscan") || "{}");
-    if (saved.dir === "h" || saved.dir === "v") state.dir = saved.dir;
-    if ([1, 2, 4].includes(saved.slit)) state.slit = saved.slit;
-    if (typeof saved.retro === "boolean") state.retro = saved.retro;
-  } catch {}
-  const savePrefs = () => {
-    try { localStorage.setItem("slitscan", JSON.stringify({ dir: state.dir, slit: state.slit, retro: state.retro })); } catch {}
+  const state = {
+    src: null, srcW: 0, srcH: 0, srcData: null, focal: 0,
+    corners: [], shape: "auto", autoRatio: 1, autoMethod: "",
+    look: "scan", flat: null, outW: 0, outH: 0, looks: {}, outUrl: null, fileName: "flatscan",
   };
+  try { const l = localStorage.getItem("flatscan-look"); if (["scan", "mono", "photo"].includes(l)) state.look = l; } catch {}
 
-  // Scan buffer
-  let strip = null, sctx = null, pos = 0, len = 0, maxPos = 0, scanDir = "h", scanSlit = 2, lastPreview = 0;
-  let result = null, outUrl = null, wakeLock = null;
+  const show = (id) => { for (const s of ["startScreen", "editScreen", "resultScreen"]) $(s).hidden = s !== id; };
+  const busy = (text) => { $("busyText").textContent = text; $("busy").hidden = false; return new Promise((r) => setTimeout(r, 50)); };
+  const idle = () => { $("busy").hidden = true; };
 
-  // ---------- Camera ----------
-  const lensName = (label) => /ultra/i.test(label) ? "0.5×" : /t[ée]l[ée]/i.test(label) ? "TELE" : "1×";
-  const lensRank = (d) => ({ "0.5×": 0, "1×": 1, "TELE": 2 })[lensName(d.label)];
-
-  async function powerOn() {
-    $("powerBtn").disabled = true;
+  // ---------- Step 1: load ----------
+  async function loadFile(file) {
+    if (!file) return;
+    $("startErr").hidden = true;
+    await busy("LOADING…");
     try {
-      // First stream unlocks device labels, so we can find the ultra-wide by name.
-      const probe = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
-      const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
-      probe.getTracks().forEach((t) => t.stop());
-      // Skip front cameras and iOS virtual multi-lens cameras (they auto-switch lenses mid-sweep).
-      let cams = devices.filter((d) => d.label && !/front|avant|frontal|dual|triple|double/i.test(d.label));
-      cams.sort((a, b) => lensRank(a) - lensRank(b));
-      state.cams = cams;
-      state.camIndex = 0;
-      await openCamera();
-      $("power").hidden = true;
-      $("startBtn").disabled = false;
-      $("lensBtn").disabled = state.cams.length < 2;
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      let w = img.naturalWidth, h = img.naturalHeight;
+      const k = Math.min(1, Math.sqrt(MAX_SOURCE / (w * h)));
+      w = Math.round(w * k); h = Math.round(h * k);
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      let mm35 = 0;
+      try { mm35 = Flat.exifFocal35(await file.arrayBuffer()); } catch {}
+      Object.assign(state, {
+        src: c, srcW: w, srcH: h, srcData: ctx.getImageData(0, 0, w, h).data,
+        focal: Flat.focalFromEquiv(mm35, w, h), shape: "auto",
+      });
+      const inset = 0.18;
+      state.corners = [
+        { x: w * inset, y: h * inset }, { x: w * (1 - inset), y: h * inset },
+        { x: w * (1 - inset), y: h * (1 - inset) }, { x: w * inset, y: h * (1 - inset) },
+      ];
+      $("editImg").src = c.toDataURL("image/jpeg", 0.85);
+      await $("editImg").decode();
+      show("editScreen");
+      layout();
+      updateShape();
     } catch (err) {
-      $("powerBtn").disabled = false;
-      const msg = $("powerMsg");
-      msg.classList.add("err");
-      msg.textContent = err && err.name === "NotAllowedError"
-        ? "Camera access is blocked. On iPhone: Settings ▸ Apps ▸ Safari ▸ Camera ▸ Allow, then reload this page."
-        : "Couldn’t start the camera (" + (err && err.name || "unknown error") + "). Close other camera apps and try again.";
+      $("startErr").textContent = "Couldn’t open that photo. Try another one, or take a new photo.";
+      $("startErr").hidden = false;
+    } finally {
+      idle();
     }
   }
-
-  async function openCamera() {
-    if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
-    const cam = state.cams[state.camIndex];
-    const constraints = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } };
-    if (cam) constraints.deviceId = { exact: cam.deviceId };
-    else constraints.facingMode = { ideal: "environment" };
-    const stream = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
-    state.stream = stream;
-    video.srcObject = stream;
-    await video.play();
-    state.lens = cam ? lensName(cam.label) : lensName(stream.getVideoTracks()[0].label);
-    $("lcdLens").textContent = state.lens;
-    $("lensLabel").textContent = state.lens;
-    startLoop();
+  for (const id of ["cameraInput", "libraryInput"]) {
+    $(id).addEventListener("change", (e) => { loadFile(e.target.files[0]); e.target.value = ""; });
   }
 
-  async function nextLens() {
-    if (state.scanning || state.cams.length < 2) return;
-    state.camIndex = (state.camIndex + 1) % state.cams.length;
-    $("lensBtn").disabled = true;
-    try { await openCamera(); } finally { $("lensBtn").disabled = false; }
+  // ---------- Step 2: corners ----------
+  let view = { x: 0, y: 0, s: 1 }, drag = -1;
+  const handleEls = [];
+  for (let i = 0; i < 4; i++) {
+    const el = document.createElementNS(NS, "circle");
+    el.setAttribute("class", "handle");
+    el.setAttribute("r", "15");
+    $("handles").appendChild(el);
+    handleEls.push(el);
   }
 
-  // ---------- Frame loop ----------
-  const hasFrameCallback = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
-  let loopId = 0, frames = 0, fpsSince = performance.now();
+  function layout() {
+    if (!state.src || $("editScreen").hidden) return;
+    const r = $("stage").getBoundingClientRect(), pad = 22;
+    const s = Math.min((r.width - pad * 2) / state.srcW, (r.height - pad * 2) / state.srcH);
+    const w = state.srcW * s, h = state.srcH * s;
+    view = { x: (r.width - w) / 2, y: (r.height - h) / 2, s };
+    Object.assign($("editImg").style, { left: view.x + "px", top: view.y + "px", width: w + "px", height: h + "px" });
+    Object.assign($("overlay").style, { left: "0px", top: "0px", width: r.width + "px", height: r.height + "px" });
+    $("overlay").setAttribute("viewBox", `0 0 ${r.width} ${r.height}`);
+    drawQuad();
+  }
 
-  function startLoop() {
-    const id = ++loopId;
-    const step = () => {
-      if (id !== loopId) return;
-      onFrame();
-      hasFrameCallback ? video.requestVideoFrameCallback(step) : requestAnimationFrame(step);
+  const toScreen = (p) => ({ x: view.x + p.x * view.s, y: view.y + p.y * view.s });
+
+  function drawQuad() {
+    const r = $("stage").getBoundingClientRect();
+    const pts = state.corners.map(toScreen);
+    const poly = pts.map((p) => `${p.x},${p.y}`).join(" ");
+    $("quad").setAttribute("points", poly);
+    $("shade").setAttribute("d", `M0 0H${r.width}V${r.height}H0Z M${pts.map((p) => `${p.x} ${p.y}`).join(" L")}Z`);
+    pts.forEach((p, i) => {
+      handleEls[i].setAttribute("cx", p.x);
+      handleEls[i].setAttribute("cy", p.y);
+      handleEls[i].classList.toggle("active", i === drag);
+    });
+  }
+
+  function pointerToImage(e) {
+    const r = $("stage").getBoundingClientRect();
+    return {
+      x: Math.min(state.srcW, Math.max(0, (e.clientX - r.left - view.x) / view.s)),
+      y: Math.min(state.srcH, Math.max(0, (e.clientY - r.top - view.y) / view.s)),
     };
-    hasFrameCallback ? video.requestVideoFrameCallback(step) : requestAnimationFrame(step);
   }
 
-  function onFrame() {
-    if (state.scanning) addSlit();
-    frames++;
-    const now = performance.now();
-    if (now - fpsSince >= 1000) {
-      $("lcdFps").textContent = Math.round(frames * 1000 / (now - fpsSince)) + "FPS";
-      frames = 0;
-      fpsSince = now;
+  $("stage").addEventListener("pointerdown", (e) => {
+    const r = $("stage").getBoundingClientRect();
+    let best = -1, bestD = 48;
+    state.corners.map(toScreen).forEach((p, i) => {
+      const d = Math.hypot(e.clientX - r.left - p.x, e.clientY - r.top - p.y);
+      if (d < bestD) { best = i; bestD = d; }
+    });
+    if (best < 0) return;
+    drag = best;
+    $("stage").setPointerCapture(e.pointerId);
+    drawQuad();
+    drawLoupe(e);
+  });
+  $("stage").addEventListener("pointermove", (e) => {
+    if (drag < 0) return;
+    state.corners[drag] = pointerToImage(e);
+    drawQuad();
+    drawLoupe(e);
+  });
+  const endDrag = () => {
+    if (drag < 0) return;
+    drag = -1;
+    $("loupe").hidden = true;
+    drawQuad();
+    updateShape();
+  };
+  $("stage").addEventListener("pointerup", endDrag);
+  $("stage").addEventListener("pointercancel", endDrag);
+
+  // Magnifier in the corner away from the finger, so you can see exactly where the point lands.
+  function drawLoupe(e) {
+    const loupe = $("loupe"), ctx = loupe.getContext("2d");
+    const r = $("stage").getBoundingClientRect();
+    const onLeft = e.clientX - r.left < r.width / 2 && e.clientY - r.top < 170;
+    loupe.className = "loupe " + (onLeft ? "right" : "left");
+    loupe.hidden = false;
+    const p = state.corners[drag], size = loupe.width;
+    const span = 132 / (view.s * 3); // 3x the on-screen magnification
+    ctx.save();
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, size, size);
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2); ctx.clip();
+    ctx.imageSmoothingQuality = "high";
+    // Clip the source rect to the photo; Safari draws nothing if it runs past an edge.
+    const k = size / span;
+    const sx = Math.max(0, p.x - span / 2), sy = Math.max(0, p.y - span / 2);
+    const ex = Math.min(state.srcW, p.x + span / 2), ey = Math.min(state.srcH, p.y + span / 2);
+    if (ex > sx && ey > sy) {
+      ctx.drawImage(state.src, sx, sy, ex - sx, ey - sy,
+        (sx - (p.x - span / 2)) * k, (sy - (p.y - span / 2)) * k, (ex - sx) * k, (ey - sy) * k);
     }
+    ctx.strokeStyle = "#ffb000"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(size / 2, size / 2 - 22); ctx.lineTo(size / 2, size / 2 + 22);
+    ctx.moveTo(size / 2 - 22, size / 2); ctx.lineTo(size / 2 + 22, size / 2); ctx.stroke();
+    ctx.restore();
   }
 
-  // ---------- Scanning ----------
-  function startScan() {
-    const vw = video.videoWidth, vh = video.videoHeight;
-    if (!vw || !vh) return;
-    scanDir = state.dir;
-    scanSlit = state.slit;
-    len = scanDir === "h" ? vh : vw;
-    maxPos = Math.min(MAX_LINES, Math.floor(MAX_AREA / len));
-    strip = document.createElement("canvas");
-    if (scanDir === "h") { strip.width = maxPos; strip.height = len; }
-    else { strip.width = len; strip.height = maxPos; }
-    sctx = strip.getContext("2d");
-    pos = 0;
-    state.scanning = true;
-    $("trayHint").hidden = true;
-    setScanningUI(true);
-    if (navigator.wakeLock) navigator.wakeLock.request("screen").then((l) => { wakeLock = l; }, () => {});
+  function currentRatio() {
+    if (state.shape === "auto") return state.autoRatio;
+    const preset = Number(state.shape);
+    return state.autoRatio >= 1 ? preset : 1 / preset; // follow the surface's orientation
   }
 
-  // Copy the centre slit of the current frame onto the end of the strip.
-  function addSlit() {
-    const vw = video.videoWidth, vh = video.videoHeight;
-    const w = Math.min(scanSlit, maxPos - pos);
-    if (scanDir === "h") {
-      sctx.drawImage(video, (vw - w) >> 1, 0, w, vh, pos, 0, w, len);
-    } else {
-      sctx.drawImage(video, 0, (vh - w) >> 1, vw, w, 0, pos, len, w);
+  function updateShape() {
+    const q = Flat.orderCorners(state.corners);
+    const est = Flat.estimateAspect(q, state.srcW, state.srcH, state.focal);
+    state.autoRatio = est.ratio;
+    state.autoMethod = est.method;
+    for (const b of $("shapeChips").children) b.setAttribute("aria-checked", String(b.dataset.shape === state.shape));
+    $("ratioLcd").textContent = "W:H " + currentRatio().toFixed(2);
+    $("shapeHint").textContent = state.shape !== "auto" ? "Preset"
+      : est.method === "exif" ? "Measured using the photo’s lens data"
+      : "Estimated. Pick a preset if you know it";
+  }
+
+  $("shapeChips").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    state.shape = b.dataset.shape;
+    updateShape();
+  });
+  $("backBtn").addEventListener("click", () => show("startScreen"));
+  window.addEventListener("resize", layout);
+
+  // ---------- Step 3: flatten ----------
+  async function flatten() {
+    await busy("FLATTENING…");
+    const q = Flat.orderCorners(state.corners);
+    const { W, H } = Flat.outputSize(q, currentRatio(), MAX_OUTPUT);
+    const px = Flat.warp(state.srcData, state.srcW, state.srcH, q, W, H);
+    Object.assign(state, { flat: px, outW: W, outH: H, looks: {} });
+    const d = new Date();
+    state.fileName = "flatscan-" + d.toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    await renderLook();
+    $("dimsLcd").textContent = W + "×" + H;
+    show("resultScreen");
+    idle();
+  }
+
+  async function renderLook() {
+    let blob = state.looks[state.look];
+    if (!blob) {
+      const pixels = state.look === "photo" ? state.flat : Flat.scannerLook(state.flat, state.outW, state.outH, state.look === "mono");
+      const c = document.createElement("canvas");
+      c.width = state.outW; c.height = state.outH;
+      c.getContext("2d").putImageData(new ImageData(pixels, state.outW, state.outH), 0, 0);
+      blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.93));
+      c.width = c.height = 0;
+      state.looks[state.look] = blob;
     }
-    pos += w;
-    const now = performance.now();
-    if (now - lastPreview > 66) {
-      lastPreview = now;
-      drawPreview();
-    }
-    if (pos >= maxPos) stopScan();
+    if (state.outUrl) URL.revokeObjectURL(state.outUrl);
+    state.outUrl = URL.createObjectURL(blob);
+    $("outImg").src = state.outUrl;
+    for (const b of $("lookChips").children) b.setAttribute("aria-checked", String(b.dataset.look === state.look));
   }
 
-  function drawPreview() {
-    const rect = preview.getBoundingClientRect();
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const W = Math.max(1, Math.round(rect.width * dpr)), H = Math.max(1, Math.round(rect.height * dpr));
-    if (preview.width !== W || preview.height !== H) { preview.width = W; preview.height = H; }
-    pctx.fillStyle = "#14120f";
-    pctx.fillRect(0, 0, W, H);
-    $("lcdLines").textContent = String(pos).padStart(4, "0");
-    $("meter").style.width = (maxPos ? (pos / maxPos) * 100 : 0) + "%";
-    if (!strip || !pos) return;
-    if (scanDir === "h") {
-      // Fit height; once it outgrows the tray, keep the newest end in view.
-      const scale = H / len, drawn = pos * scale;
-      if (drawn <= W) pctx.drawImage(strip, 0, 0, pos, len, 0, 0, drawn, H);
-      else { const srcW = W / scale; pctx.drawImage(strip, pos - srcW, 0, srcW, len, 0, 0, W, H); }
-    } else {
-      const scale = W / len, drawn = pos * scale;
-      if (drawn <= H) pctx.drawImage(strip, 0, 0, len, pos, 0, 0, W, drawn);
-      else { const srcH = H / scale; pctx.drawImage(strip, 0, pos - srcH, len, srcH, 0, 0, W, H); }
-    }
-  }
+  $("flattenBtn").addEventListener("click", flatten);
+  $("lookChips").addEventListener("click", async (e) => {
+    const b = e.target.closest("button"); if (!b || b.dataset.look === state.look) return;
+    state.look = b.dataset.look;
+    try { localStorage.setItem("flatscan-look", state.look); } catch {}
+    if (!state.looks[state.look]) await busy("PROCESSING…");
+    await renderLook();
+    idle();
+  });
+  $("adjustBtn").addEventListener("click", () => { show("editScreen"); layout(); });
+  $("newBtn").addEventListener("click", () => {
+    state.flat = null; state.looks = {};
+    show("startScreen");
+  });
 
-  async function stopScan() {
-    if (!state.scanning) return;
-    state.scanning = false;
-    setScanningUI(false);
-    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
-    drawPreview();
-    if (pos < 4) { strip = sctx = null; return; }
-
-    $("developing").hidden = false;
-    await new Promise((r) => setTimeout(r, 40)); // let the overlay paint
-    const W = scanDir === "h" ? pos : len, H = scanDir === "h" ? len : pos;
-    const clean = document.createElement("canvas");
-    clean.width = W; clean.height = H;
-    clean.getContext("2d").drawImage(strip, 0, 0, W, H, 0, 0, W, H);
-    strip = sctx = null;
-    const retro = makeRetro(clean, scanDir);
-    result = { w: W, h: H, dir: scanDir, clean: await toJpeg(clean), retro: await toJpeg(retro), at: new Date() };
-    clean.width = clean.height = retro.width = retro.height = 0; // free canvas memory on iOS
-    $("developing").hidden = true;
-    showResult();
-  }
-
-  const toJpeg = (canvas) => new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
-
-  // Old-scanner finish: warm mono, contrast, grain, scan lines along the slits, vignette.
-  function makeRetro(src, dir) {
-    const W = src.width, H = src.height;
-    const c = document.createElement("canvas");
-    c.width = W; c.height = H;
-    const ctx = c.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(src, 0, 0);
-    const img = ctx.getImageData(0, 0, W, H), d = img.data;
-    let seed = 0x2545f491;
-    const kx = 2 / W, ky = 2 / H, horizontal = dir === "h";
-    for (let y = 0, i = 0; y < H; y++) {
-      const ny = y * ky - 1, ny2 = ny * ny;
-      for (let x = 0; x < W; x++, i += 4) {
-        let l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        l = (l - 128) * 1.18 + 133;
-        seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
-        l += ((seed >>> 0) / 4294967296 - 0.5) * 24;
-        if ((horizontal ? x : y) & 1) l *= 0.93;
-        const nx = x * kx - 1;
-        l *= 1 - 0.16 * (nx * nx + ny2);
-        d[i] = l * 1.06 + 10;
-        d[i + 1] = l * 0.98 + 4;
-        d[i + 2] = l * 0.84 - 2;
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    return c;
-  }
-
-  // ---------- Result ----------
-  function showResult() {
-    $("outDims").textContent = result.w + "×" + result.h;
-    $("output").className = "output " + result.dir;
-    renderOutput();
-    $("sheet").hidden = false;
-    $("output").scrollLeft = 0;
-    $("output").scrollTop = 0;
-  }
-
-  function renderOutput() {
-    if (!result) return;
-    if (outUrl) URL.revokeObjectURL(outUrl);
-    outUrl = URL.createObjectURL(state.retro ? result.retro : result.clean);
-    $("outImg").src = outUrl;
-  }
-
-  async function share() {
-    const blob = state.retro ? result.retro : result.clean;
-    const stamp = result.at.toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    const file = new File([blob], "slitscan-" + stamp + ".jpg", { type: "image/jpeg" });
+  $("shareBtn").addEventListener("click", async () => {
+    const file = new File([state.looks[state.look]], state.fileName + ".jpg", { type: "image/jpeg" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file] }); }
-      catch (err) { if (err.name !== "AbortError") $("tip").textContent = "Sharing didn’t work here. Press and hold the image to save it."; }
+      catch (err) { if (err.name !== "AbortError") $("shareHint").textContent = "Sharing didn’t work here. Press and hold the image to save it."; }
     } else {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(file);
       a.download = file.name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     }
-  }
-
-  function closeResult() {
-    $("sheet").hidden = true;
-    $("outImg").removeAttribute("src");
-    if (outUrl) { URL.revokeObjectURL(outUrl); outUrl = null; }
-    result = null;
-    pos = 0;
-    drawPreview();
-    $("trayHint").hidden = false;
-  }
-
-  // ---------- UI ----------
-  function setScanningUI(on) {
-    $("app").classList.toggle("scanning", on);
-    $("startBtn").textContent = on ? "STOP" : "START";
-    for (const b of document.querySelectorAll(".seg button")) b.disabled = on;
-    $("lensBtn").disabled = on || state.cams.length < 2;
-  }
-
-  function renderControls() {
-    for (const b of $("dirSeg").children) b.setAttribute("aria-checked", String(b.dataset.v === state.dir));
-    for (const b of $("slitSeg").children) b.setAttribute("aria-checked", String(Number(b.dataset.v) === state.slit));
-    $("lamp").className = "lamp " + state.dir;
-    $("trayHint").textContent = state.dir === "h"
-      ? "Press START, then turn slowly left → right"
-      : "Press START, then tilt slowly top → bottom";
-    const label = state.retro ? "ON" : "OFF";
-    for (const id of ["retroBtn", "retroBtn2"]) $(id).setAttribute("aria-pressed", String(state.retro));
-    $("retroLabel").textContent = label;
-    $("retroLabel2").textContent = label;
-  }
-
-  $("powerBtn").addEventListener("click", powerOn);
-  $("startBtn").addEventListener("click", () => state.scanning ? stopScan() : startScan());
-  $("lensBtn").addEventListener("click", nextLens);
-  $("dirSeg").addEventListener("click", (e) => {
-    const b = e.target.closest("button"); if (!b || state.scanning) return;
-    state.dir = b.dataset.v; savePrefs(); renderControls();
   });
-  $("slitSeg").addEventListener("click", (e) => {
-    const b = e.target.closest("button"); if (!b || state.scanning) return;
-    state.slit = Number(b.dataset.v); savePrefs(); renderControls();
-  });
-  const toggleRetro = () => { state.retro = !state.retro; savePrefs(); renderControls(); renderOutput(); };
-  $("retroBtn").addEventListener("click", toggleRetro);
-  $("retroBtn2").addEventListener("click", toggleRetro);
-  $("shareBtn").addEventListener("click", share);
-  $("newBtn").addEventListener("click", closeResult);
-  document.addEventListener("visibilitychange", () => { if (document.hidden && state.scanning) stopScan(); });
-  window.addEventListener("resize", () => drawPreview());
-
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    $("powerBtn").disabled = true;
-    $("powerMsg").classList.add("err");
-    $("powerMsg").textContent = "This browser can’t use the camera here. Open the page in Safari over https.";
-  }
-  renderControls();
-  drawPreview();
 })();
 </script>
 </body>
