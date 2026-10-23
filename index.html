@@ -224,7 +224,8 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const NS = "http://www.w3.org/2000/svg";
-  const MAX_SOURCE = 16000000, MAX_OUTPUT = 12000000;
+  // Kept well under iOS Safari's per-tab memory limit, which kills the page when exceeded.
+  const MAX_SOURCE = 12500000, MAX_OUTPUT = 9000000, MAX_TEXTURE = 4096;
 
   const state = {
     src: null, srcW: 0, srcH: 0, srcData: null, focal: 0,
@@ -233,6 +234,17 @@
   };
   try { const l = localStorage.getItem("flatscan-look"); if (["retro", "scan", "mono", "photo"].includes(l)) state.look = l; } catch {}
 
+  const STEP_KEY = "flatscan-step";
+  const markStep = (step) => { try { step ? localStorage.setItem(STEP_KEY, step) : localStorage.removeItem(STEP_KEY); } catch {} };
+  try {
+    const crashed = localStorage.getItem(STEP_KEY);
+    if (crashed) {
+      localStorage.removeItem(STEP_KEY);
+      const e = document.getElementById("startErr");
+      e.textContent = "Last time the app closed while " + crashed + ". It probably ran out of memory. Try again, or tell Claude this message.";
+      e.hidden = false;
+    }
+  } catch {}
   const show = (id) => { for (const s of ["startScreen", "editScreen", "resultScreen"]) $(s).hidden = s !== id; };
   const busy = (text) => { $("busyText").textContent = text; $("busy").hidden = false; return new Promise((r) => setTimeout(r, 50)); };
   const idle = () => { $("busy").hidden = true; };
@@ -258,7 +270,7 @@
       let mm35 = 0;
       try { mm35 = Flat.exifFocal35(await file.arrayBuffer()); } catch {}
       Object.assign(state, {
-        src: c, srcW: w, srcH: h, srcData: ctx.getImageData(0, 0, w, h).data,
+        src: c, srcW: w, srcH: h,
         focal: Flat.focalFromEquiv(mm35, w, h), shape: "auto", depth: null,
       });
       const inset = 0.18;
@@ -266,7 +278,9 @@
         { x: w * inset, y: h * inset }, { x: w * (1 - inset), y: h * inset },
         { x: w * (1 - inset), y: h * (1 - inset) }, { x: w * inset, y: h * (1 - inset) },
       ];
-      $("editImg").src = c.toDataURL("image/jpeg", 0.85);
+      if (state.editUrl) URL.revokeObjectURL(state.editUrl);
+      state.editUrl = URL.createObjectURL(await new Promise((r) => c.toBlob(r, "image/jpeg", 0.85)));
+      $("editImg").src = state.editUrl;
       await $("editImg").decode();
       show("editScreen");
       layout();
@@ -428,20 +442,25 @@
       if (state.mode === "scene") {
         if (!state.depth) state.depth = await measureDepth();
         await busy("FLATTENING…");
+        markStep("building the 3D scene");
         const S = Flat.buildScene({
           disparity: state.depth.data, dw: state.depth.w, dh: state.depth.h,
           srcW: state.srcW, srcH: state.srcH, quad: q, ratio, focal: state.autoFocal,
         });
+        markStep("drawing the flat view");
         Object.assign(state, { flat: renderSceneGL(S, state.src), outW: S.W, outH: S.H });
+        markStep(null);
       } else {
         await busy("FLATTENING…");
         const { W, H } = Flat.outputSize(q, ratio, MAX_OUTPUT);
-        Object.assign(state, { flat: Flat.warp(state.srcData, state.srcW, state.srcH, q, W, H), outW: W, outH: H });
+        const srcData = state.src.getContext("2d").getImageData(0, 0, state.srcW, state.srcH).data;
+        Object.assign(state, { flat: Flat.warp(srcData, state.srcW, state.srcH, q, W, H), outW: W, outH: H });
       }
     } catch (err) {
+      markStep(null);
       idle();
       $("modeHint").textContent = err.message === "surface-too-small" ? "That surface is too small to measure. Drag the corners wider apart."
-        : err.message === "depth-model" ? "Couldn’t load the depth model. Check your connection and try again, or use Surface only."
+        : err.message.startsWith("depth-model") ? "Couldn’t load the depth model (" + err.message.slice(13) + "). Check your connection and try again, or use Surface only."
         : err.message === "webgl" ? "This browser can’t draw the 3D view. Use Surface only."
         : "Flattening failed (" + err.message + "). Try moving the corners, or use Surface only.";
       return;
@@ -450,7 +469,9 @@
     const d = new Date();
     state.fileName = "flatscan-" + d.toISOString().slice(0, 19).replace(/[:T]/g, "-");
     await busy("DEVELOPING…");
+    markStep("applying the look");
     await renderLook();
+    markStep(null);
     $("dimsLcd").textContent = state.outW + "×" + state.outH;
     show("resultScreen");
     idle();
@@ -469,28 +490,26 @@
     };
     let tf;
     try { tf = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5"); }
-    catch { throw new Error("depth-model"); }
+    catch (err) { throw new Error("depth-model: library didn’t load"); }
     tf.env.allowLocalModels = false;
     const model = "onnx-community/depth-anything-v2-small";
-    let webgpu = false;
-    try { webgpu = !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch {}
-    if (webgpu) {
-      try { depthPipe = await tf.pipeline("depth-estimation", model, { device: "webgpu", dtype: "fp16", progress_callback: onProgress }); }
-      catch { depthPipe = null; }
-    }
-    if (!depthPipe) {
-      try { depthPipe = await tf.pipeline("depth-estimation", model, { device: "wasm", dtype: "q8", progress_callback: onProgress }); }
-      catch { throw new Error("depth-model"); }
-    }
+    // WASM on the CPU, single thread: steadier on iPhone than WebGPU, and GitHub Pages can't
+    // enable the cross-origin isolation that threads need.
+    const wasmEnv = tf.env.backends && tf.env.backends.onnx && tf.env.backends.onnx.wasm;
+    if (wasmEnv) wasmEnv.numThreads = 1;
+    try { depthPipe = await tf.pipeline("depth-estimation", model, { device: "wasm", dtype: "q8", progress_callback: onProgress }); }
+    catch (err) { throw new Error("depth-model: " + (err && err.message || err)); }
     return depthPipe;
   }
 
   async function measureDepth() {
     await busy("LOADING DEPTH MODEL…");
+    markStep("loading the depth model");
     const pipe = await loadDepthModel();
+    markStep("measuring depth");
     $("busyText").textContent = "MEASURING DEPTH…";
     await new Promise((r) => setTimeout(r, 30));
-    const k = Math.min(1, 640 / Math.max(state.srcW, state.srcH));
+    const k = Math.min(1, 518 / Math.max(state.srcW, state.srcH)); // the model's own input size
     const c = document.createElement("canvas");
     c.width = Math.round(state.srcW * k); c.height = Math.round(state.srcH * k);
     c.getContext("2d").drawImage(state.src, 0, 0, c.width, c.height);
@@ -498,7 +517,9 @@
     try {
       const out = await pipe(url);
       const t = out.predicted_depth, [h, w] = t.dims.slice(-2);
-      return { data: Float32Array.from(t.data), w, h };
+      const data = Float32Array.from(t.data);
+      markStep(null);
+      return { data, w, h };
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -541,7 +562,7 @@
     buffer(gl.ELEMENT_ARRAY_BUFFER, S.indices);
 
     let texSrc = src;
-    const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    const maxTex = Math.min(MAX_TEXTURE, gl.getParameter(gl.MAX_TEXTURE_SIZE));
     if (Math.max(src.width, src.height) > maxTex) {
       const k = maxTex / Math.max(src.width, src.height);
       texSrc = document.createElement("canvas");
