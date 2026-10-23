@@ -1,7 +1,7 @@
 {
   "name": "FlatScan",
   "short_name": "FlatScan",
-  "description": "Pick any surface in a photo and flatten it into a straight-on scan.",
+  "description": "Squash any scene flat onto a surface you pick, like a scan.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

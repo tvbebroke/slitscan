@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>FlatScan</title>
-<meta name="description" content="Pick any surface in a photo and flatten it into a straight-on scan.">
+<meta name="description" content="Squash any scene flat onto a surface you pick, like a scan.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -142,11 +142,11 @@
         <rect x="226" y="114" width="72" height="40" fill="#9a9286"/>
       </svg>
     </div>
-    <h1>Turn any surface into a flat, straight-on scan.</h1>
+    <h1>Squash any scene flat, like it went through a scanner.</h1>
     <ul class="tips">
-      <li><b>1</b><span>Shoot the surface. In the camera, tap <strong>0.5×</strong> to fit big things like walls, floors and murals.</span></li>
-      <li><b>2</b><span>Drag the four corners onto the surface’s edges.</span></li>
-      <li><b>3</b><span>FlatScan removes the perspective and the uneven light.</span></li>
+      <li><b>1</b><span>Shoot the scene. In the camera, tap <strong>0.5×</strong> to fit big things like walls, floors and murals.</span></li>
+      <li><b>2</b><span>Drag the four corners onto a flat rectangle in it: a rug, a table, floor tiles, a wall.</span></li>
+      <li><b>3</b><span>FlatScan lays the whole scene flat onto that surface, as if seen from straight above, with no perspective.</span></li>
     </ul>
     <p class="err" id="startErr" hidden></p>
   </div>
@@ -172,6 +172,12 @@
     <canvas class="loupe left" id="loupe" width="264" height="264" hidden></canvas>
   </div>
   <div class="panel">
+    <span class="label" id="modeLabel">Flatten</span>
+    <div class="chips" role="radiogroup" aria-labelledby="modeLabel" id="modeChips">
+      <button type="button" role="radio" id="modeScene" data-mode="scene" aria-checked="true">Whole scene (3D)</button>
+      <button type="button" role="radio" id="modeSurface" data-mode="surface" aria-checked="false">Surface only</button>
+    </div>
+    <p class="hint" id="modeHint"></p>
     <div class="panel-row">
       <span class="label" id="shapeLabel">Real shape</span>
       <span class="hint" id="shapeHint"></span>
@@ -198,7 +204,8 @@
   <div class="panel">
     <span class="label" id="lookLabel">Look</span>
     <div class="chips" role="radiogroup" aria-labelledby="lookLabel" id="lookChips">
-      <button type="button" role="radio" id="lookScan" data-look="scan" aria-checked="true">Scanner</button>
+      <button type="button" role="radio" id="lookRetro" data-look="retro" aria-checked="true">Retro scan</button>
+      <button type="button" role="radio" id="lookScan" data-look="scan" aria-checked="false">Scanner</button>
       <button type="button" role="radio" id="lookMono" data-look="mono" aria-checked="false">Scanner B&amp;W</button>
       <button type="button" role="radio" id="lookPhoto" data-look="photo" aria-checked="false">Original light</button>
     </div>
@@ -222,9 +229,9 @@
   const state = {
     src: null, srcW: 0, srcH: 0, srcData: null, focal: 0,
     corners: [], shape: "auto", autoRatio: 1, autoMethod: "",
-    look: "scan", flat: null, outW: 0, outH: 0, looks: {}, outUrl: null, fileName: "flatscan",
+    mode: "scene", depth: null, look: "retro", flat: null, outW: 0, outH: 0, looks: {}, outUrl: null, fileName: "flatscan",
   };
-  try { const l = localStorage.getItem("flatscan-look"); if (["scan", "mono", "photo"].includes(l)) state.look = l; } catch {}
+  try { const l = localStorage.getItem("flatscan-look"); if (["retro", "scan", "mono", "photo"].includes(l)) state.look = l; } catch {}
 
   const show = (id) => { for (const s of ["startScreen", "editScreen", "resultScreen"]) $(s).hidden = s !== id; };
   const busy = (text) => { $("busyText").textContent = text; $("busy").hidden = false; return new Promise((r) => setTimeout(r, 50)); };
@@ -252,7 +259,7 @@
       try { mm35 = Flat.exifFocal35(await file.arrayBuffer()); } catch {}
       Object.assign(state, {
         src: c, srcW: w, srcH: h, srcData: ctx.getImageData(0, 0, w, h).data,
-        focal: Flat.focalFromEquiv(mm35, w, h), shape: "auto",
+        focal: Flat.focalFromEquiv(mm35, w, h), shape: "auto", depth: null,
       });
       const inset = 0.18;
       state.corners = [
@@ -389,7 +396,12 @@
     const est = Flat.estimateAspect(q, state.srcW, state.srcH, state.focal);
     state.autoRatio = est.ratio;
     state.autoMethod = est.method;
+    state.autoFocal = est.focal;
     for (const b of $("shapeChips").children) b.setAttribute("aria-checked", String(b.dataset.shape === state.shape));
+    for (const b of $("modeChips").children) b.setAttribute("aria-checked", String(b.dataset.mode === state.mode));
+    $("modeHint").textContent = state.mode === "scene"
+      ? "Everything in the photo is laid flat onto the surface you picked. Hidden areas turn black."
+      : "Only the picked surface, straightened out.";
     $("ratioLcd").textContent = "W:H " + currentRatio().toFixed(2);
     $("shapeHint").textContent = state.shape !== "auto" ? "Preset"
       : est.method === "exif" ? "Measured using the photo’s lens data"
@@ -401,28 +413,175 @@
     state.shape = b.dataset.shape;
     updateShape();
   });
+  $("modeChips").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    state.mode = b.dataset.mode;
+    updateShape();
+  });
   $("backBtn").addEventListener("click", () => show("startScreen"));
   window.addEventListener("resize", layout);
 
   // ---------- Step 3: flatten ----------
   async function flatten() {
-    await busy("FLATTENING…");
-    const q = Flat.orderCorners(state.corners);
-    const { W, H } = Flat.outputSize(q, currentRatio(), MAX_OUTPUT);
-    const px = Flat.warp(state.srcData, state.srcW, state.srcH, q, W, H);
-    Object.assign(state, { flat: px, outW: W, outH: H, looks: {} });
+    const q = Flat.orderCorners(state.corners), ratio = currentRatio();
+    try {
+      if (state.mode === "scene") {
+        if (!state.depth) state.depth = await measureDepth();
+        await busy("FLATTENING…");
+        const S = Flat.buildScene({
+          disparity: state.depth.data, dw: state.depth.w, dh: state.depth.h,
+          srcW: state.srcW, srcH: state.srcH, quad: q, ratio, focal: state.autoFocal,
+        });
+        Object.assign(state, { flat: renderSceneGL(S, state.src), outW: S.W, outH: S.H });
+      } else {
+        await busy("FLATTENING…");
+        const { W, H } = Flat.outputSize(q, ratio, MAX_OUTPUT);
+        Object.assign(state, { flat: Flat.warp(state.srcData, state.srcW, state.srcH, q, W, H), outW: W, outH: H });
+      }
+    } catch (err) {
+      idle();
+      $("modeHint").textContent = err.message === "surface-too-small" ? "That surface is too small to measure. Drag the corners wider apart."
+        : err.message === "depth-model" ? "Couldn’t load the depth model. Check your connection and try again, or use Surface only."
+        : err.message === "webgl" ? "This browser can’t draw the 3D view. Use Surface only."
+        : "Flattening failed (" + err.message + "). Try moving the corners, or use Surface only.";
+      return;
+    }
+    state.looks = {};
     const d = new Date();
     state.fileName = "flatscan-" + d.toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    await busy("DEVELOPING…");
     await renderLook();
-    $("dimsLcd").textContent = W + "×" + H;
+    $("dimsLcd").textContent = state.outW + "×" + state.outH;
     show("resultScreen");
     idle();
+  }
+
+  // ---------- Depth from one photo (Depth Anything V2, runs on the phone) ----------
+  let depthPipe = null;
+  async function loadDepthModel() {
+    if (depthPipe) return depthPipe;
+    const files = {};
+    const onProgress = (p) => {
+      if (p.status !== "progress" || !p.total) return;
+      files[p.file] = [p.loaded, p.total];
+      const [l, t] = Object.values(files).reduce((acc, v) => [acc[0] + v[0], acc[1] + v[1]], [0, 0]);
+      $("busyText").textContent = "DOWNLOADING DEPTH MODEL " + Math.round(l / t * 100) + "%";
+    };
+    let tf;
+    try { tf = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5"); }
+    catch { throw new Error("depth-model"); }
+    tf.env.allowLocalModels = false;
+    const model = "onnx-community/depth-anything-v2-small";
+    let webgpu = false;
+    try { webgpu = !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch {}
+    if (webgpu) {
+      try { depthPipe = await tf.pipeline("depth-estimation", model, { device: "webgpu", dtype: "fp16", progress_callback: onProgress }); }
+      catch { depthPipe = null; }
+    }
+    if (!depthPipe) {
+      try { depthPipe = await tf.pipeline("depth-estimation", model, { device: "wasm", dtype: "q8", progress_callback: onProgress }); }
+      catch { throw new Error("depth-model"); }
+    }
+    return depthPipe;
+  }
+
+  async function measureDepth() {
+    await busy("LOADING DEPTH MODEL…");
+    const pipe = await loadDepthModel();
+    $("busyText").textContent = "MEASURING DEPTH…";
+    await new Promise((r) => setTimeout(r, 30));
+    const k = Math.min(1, 640 / Math.max(state.srcW, state.srcH));
+    const c = document.createElement("canvas");
+    c.width = Math.round(state.srcW * k); c.height = Math.round(state.srcH * k);
+    c.getContext("2d").drawImage(state.src, 0, 0, c.width, c.height);
+    const url = URL.createObjectURL(await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92)));
+    try {
+      const out = await pipe(url);
+      const t = out.predicted_depth, [h, w] = t.dims.slice(-2);
+      return { data: Float32Array.from(t.data), w, h };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  // Orthographic render of the scene mesh, looking straight down onto the picked plane.
+  function renderSceneGL(S, src) {
+    const c = document.createElement("canvas");
+    c.width = S.W; c.height = S.H;
+    const gl = c.getContext("webgl2", { antialias: false, depth: true, premultipliedAlpha: false, preserveDrawingBuffer: true });
+    if (!gl) throw new Error("webgl");
+    const compile = (type, code) => {
+      const sh = gl.createShader(type); gl.shaderSource(sh, code); gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+      return sh;
+    };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, `#version 300 es
+      in vec3 a_pos; in vec2 a_uv; uniform vec4 u_b; uniform vec2 u_z; out vec2 v_uv;
+      void main() {
+        vec2 p = (a_pos.xy - u_b.xy) / (u_b.zw - u_b.xy) * 2.0 - 1.0;
+        float z = 1.0 - 2.0 * (a_pos.z - u_z.x) / (u_z.y - u_z.x);
+        gl_Position = vec4(p, clamp(z, -0.999, 0.999), 1.0);
+        v_uv = a_uv;
+      }`));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, `#version 300 es
+      precision highp float; in vec2 v_uv; uniform sampler2D u_tex; out vec4 o;
+      void main() { o = vec4(texture(u_tex, v_uv).rgb, 1.0); }`));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error("webgl");
+    gl.useProgram(prog);
+
+    const buffer = (target, data) => { const b = gl.createBuffer(); gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW); return b; };
+    buffer(gl.ARRAY_BUFFER, S.positions);
+    const aPos = gl.getAttribLocation(prog, "a_pos");
+    gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+    buffer(gl.ARRAY_BUFFER, S.texcoords);
+    const aUv = gl.getAttribLocation(prog, "a_uv");
+    gl.enableVertexAttribArray(aUv); gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 0, 0);
+    buffer(gl.ELEMENT_ARRAY_BUFFER, S.indices);
+
+    let texSrc = src;
+    const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    if (Math.max(src.width, src.height) > maxTex) {
+      const k = maxTex / Math.max(src.width, src.height);
+      texSrc = document.createElement("canvas");
+      texSrc.width = Math.floor(src.width * k); texSrc.height = Math.floor(src.height * k);
+      texSrc.getContext("2d").drawImage(src, 0, 0, texSrc.width, texSrc.height);
+    }
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texSrc);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    const b = S.bounds;
+    gl.uniform4f(gl.getUniformLocation(prog, "u_b"), b.umin, b.vmin, b.umax, b.vmax);
+    gl.uniform2f(gl.getUniformLocation(prog, "u_z"), S.zmin, S.zmax);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_tex"), 0);
+    gl.viewport(0, 0, S.W, S.H);
+    gl.clearColor(0, 0, 0, 0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.drawElements(gl.TRIANGLES, S.indices.length, gl.UNSIGNED_INT, 0);
+    // Row 0 of readPixels is the bottom of the viewport, which the shader maps to vmin: the top of the scan.
+    const px = new Uint8Array(S.W * S.H * 4);
+    gl.readPixels(0, 0, S.W, S.H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const lose = gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+    return new Uint8ClampedArray(px.buffer);
   }
 
   async function renderLook() {
     let blob = state.looks[state.look];
     if (!blob) {
-      const pixels = state.look === "photo" ? state.flat : Flat.scannerLook(state.flat, state.outW, state.outH, state.look === "mono");
+      const { flat, outW: W, outH: H } = state;
+      const pixels = state.look === "photo" ? flat
+        : state.look === "retro" ? Flat.retroScan(Flat.scannerLook(flat, W, H, false), W, H)
+        : Flat.scannerLook(flat, W, H, state.look === "mono");
       const c = document.createElement("canvas");
       c.width = state.outW; c.height = state.outH;
       c.getContext("2d").putImageData(new ImageData(pixels, state.outW, state.outH), 0, 0);
