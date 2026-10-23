@@ -460,7 +460,7 @@
       markStep(null);
       idle();
       $("modeHint").textContent = err.message === "surface-too-small" ? "That surface is too small to measure. Drag the corners wider apart."
-        : err.message.startsWith("depth-model") ? "Couldn’t load the depth model (" + err.message.slice(13) + "). Check your connection and try again, or use Surface only."
+        : err.message.startsWith("depth-model") ? "The depth step failed (" + err.message.slice(13) + "). Try again, or use Surface only."
         : err.message === "webgl" ? "This browser can’t draw the 3D view. Use Surface only."
         : "Flattening failed (" + err.message + "). Try moving the corners, or use Surface only.";
       return;
@@ -477,51 +477,84 @@
     idle();
   }
 
-  // ---------- Depth from one photo (Depth Anything V2, runs on the phone) ----------
-  let depthPipe = null;
-  async function loadDepthModel() {
-    if (depthPipe) return depthPipe;
-    const files = {};
-    const onProgress = (p) => {
-      if (p.status !== "progress" || !p.total) return;
-      files[p.file] = [p.loaded, p.total];
-      const [l, t] = Object.values(files).reduce((acc, v) => [acc[0] + v[0], acc[1] + v[1]], [0, 0]);
-      $("busyText").textContent = "DOWNLOADING DEPTH MODEL " + Math.round(l / t * 100) + "%";
-    };
-    let tf;
-    try { tf = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5"); }
-    catch (err) { throw new Error("depth-model: library didn’t load"); }
-    tf.env.allowLocalModels = false;
-    const model = "onnx-community/depth-anything-v2-small";
-    // WASM on the CPU, single thread: steadier on iPhone than WebGPU, and GitHub Pages can't
-    // enable the cross-origin isolation that threads need.
-    const wasmEnv = tf.env.backends && tf.env.backends.onnx && tf.env.backends.onnx.wasm;
-    if (wasmEnv) wasmEnv.numThreads = 1;
-    try { depthPipe = await tf.pipeline("depth-estimation", model, { device: "wasm", dtype: "q8", progress_callback: onProgress }); }
-    catch (err) { throw new Error("depth-model: " + (err && err.message || err)); }
-    return depthPipe;
+  // ---------- Depth from one photo (Depth Anything V2 small, runs on the phone) ----------
+  // Plain onnxruntime WASM build and the 4-bit model with lean session options: measured at about
+  // 250 MB while running, versus ~500 MB+ through transformers.js, which made iOS Safari kill the page.
+  const ORT_DIR = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/";
+  const MODEL_URL = "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_q4.onnx";
+  const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
+
+  // Downloaded once, then kept in the browser cache for next time.
+  async function fetchModel() {
+    let cache = null;
+    try {
+      cache = await caches.open("flatscan-models");
+      const hit = await cache.match(MODEL_URL);
+      if (hit) return new Uint8Array(await hit.arrayBuffer());
+    } catch {}
+    const res = await fetch(MODEL_URL);
+    if (!res.ok || !res.body) throw new Error("depth-model: download failed (" + res.status + ")");
+    const total = Number(res.headers.get("content-length")) || 27404416;
+    const reader = res.body.getReader(), chunks = [];
+    let loaded = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+      $("busyText").textContent = "DOWNLOADING DEPTH MODEL " + Math.min(100, Math.round(loaded / total * 100)) + "%";
+    }
+    const bytes = new Uint8Array(loaded);
+    let off = 0;
+    for (const c of chunks) { bytes.set(c, off); off += c.length; }
+    try { if (cache) await cache.put(MODEL_URL, new Response(bytes)); } catch {}
+    return bytes;
   }
 
   async function measureDepth() {
     await busy("LOADING DEPTH MODEL…");
     markStep("loading the depth model");
-    const pipe = await loadDepthModel();
-    markStep("measuring depth");
-    $("busyText").textContent = "MEASURING DEPTH…";
-    await new Promise((r) => setTimeout(r, 30));
-    const k = Math.min(1, 518 / Math.max(state.srcW, state.srcH)); // the model's own input size
+    let ort;
+    try { ort = await import(ORT_DIR + "ort.wasm.min.mjs"); }
+    catch { throw new Error("depth-model: engine didn’t load"); }
+    ort.env.wasm.wasmPaths = ORT_DIR;
+    ort.env.wasm.numThreads = 1;
+    const bytes = await fetchModel();
+
+    // The model's input: long side 518, both sides multiples of 14, normalised CHW floats.
+    const k = 518 / Math.max(state.srcW, state.srcH);
+    const to14 = (v) => Math.max(14, Math.round(v / 14) * 14);
+    const mw = to14(state.srcW * k), mh = to14(state.srcH * k);
     const c = document.createElement("canvas");
-    c.width = Math.round(state.srcW * k); c.height = Math.round(state.srcH * k);
-    c.getContext("2d").drawImage(state.src, 0, 0, c.width, c.height);
-    const url = URL.createObjectURL(await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92)));
+    c.width = mw; c.height = mh;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(state.src, 0, 0, mw, mh);
+    const rgba = ctx.getImageData(0, 0, mw, mh).data, n = mw * mh, input = new Float32Array(3 * n);
+    for (let i = 0; i < n; i++) for (let ch = 0; ch < 3; ch++) input[ch * n + i] = (rgba[i * 4 + ch] / 255 - MEAN[ch]) / STD[ch];
+    c.width = c.height = 0;
+
+    // Free the on-screen copy of the photo while the model runs; it comes back afterwards.
+    $("editImg").removeAttribute("src");
+    let session = null;
     try {
-      const out = await pipe(url);
-      const t = out.predicted_depth, [h, w] = t.dims.slice(-2);
-      const data = Float32Array.from(t.data);
+      $("busyText").textContent = "MEASURING DEPTH…";
+      await new Promise((r) => setTimeout(r, 30));
+      markStep("starting the depth model");
+      session = await ort.InferenceSession.create(bytes, {
+        executionProviders: ["wasm"], enableCpuMemArena: false, enableMemPattern: false, graphOptimizationLevel: "basic",
+      });
+      markStep("measuring depth");
+      const results = await session.run({ [session.inputNames[0]]: new ort.Tensor("float32", input, [1, 3, mh, mw]) });
+      const out = results[session.outputNames[0]];
+      const data = Float32Array.from(out.data);
       markStep(null);
-      return { data, w, h };
+      return { data, w: out.dims[out.dims.length - 1], h: out.dims[out.dims.length - 2] };
+    } catch (err) {
+      throw new Error("depth-model: " + (err && err.message || err));
     } finally {
-      URL.revokeObjectURL(url);
+      if (session) { try { await session.release(); } catch {} }
+      $("editImg").src = state.editUrl;
     }
   }
 
